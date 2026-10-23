@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="pt-BR">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>Conectar o painel — Mark’s 3D</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f4f3ef;color:#252d26;font:16px/1.6 Arial,sans-serif}header{background:#252d26;color:white;padding:20px 24px;font-weight:bold}main{max-width:800px;margin:auto;padding:35px 20px}h1{font-size:30px;line-height:1.2}h2{font-size:21px;margin-top:0}section{padding:25px;background:white;border:1px solid #d7ddd4;border-radius:5px;margin:22px 0}p{margin:12px 0}a{color:#a63718}button,.button{background:#252d26;color:white;border:0;border-radius:4px;font:600 14px Arial,sans-serif;padding:13px 18px;min-height:44px;cursor:pointer;display:inline-block;text-decoration:none}textarea,input{width:100%;font:13px/1.5 monospace;padding:12px;border:1px solid #a1ac9c;border-radius:3px;margin:12px 0;min-width:0}textarea{height:170px;resize:vertical}label{font-weight:600;display:block;font-size:14px}small{display:block;color:#596456}button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,summary:focus-visible{outline:3px solid #a63718;outline-offset:3px}.notice{border-left:4px solid #bf3b17;background:#eeefe7;padding:15px 20px;font-size:14px}.status{font-size:14px;color:#7c3219;min-height:24px;margin-top:10px;overflow-wrap:anywhere}details{margin-top:16px}summary{cursor:pointer;font-size:13px}code{overflow-wrap:anywhere}footer{font-size:13px;color:#596456;margin:25px 0}ol{padding-left:22px}li{padding:5px 0}
+</style></head><body><header>Mark’s 3D / Conexão do painel</header><main><h1>Seu Supabase. Um novo painel.</h1><p>Use o projeto que você já tem. Esta página organiza os passos para preparar a Mark’s 3D sem substituir o banco do outro site.</p><div class="notice">Esta página não faz alterações no banco. Os botões copiam instruções para você revisar e executar no painel oficial do Supabase. A conexão real ainda não foi validada neste ambiente.</div>
+<section><h2>1. Preparar o espaço da Mark’s 3D</h2><ol><li>Abra o Supabase pelo botão abaixo. O projeto é <code>akvwvtcojbcfirdeqkvz</code>.</li><li>Abra <strong>SQL Editor → New query</strong>.</li><li>Copie a instalação, cole no editor, confira e clique em <strong>Run</strong>.</li></ol><p>Ela cria as tabelas <code>marks3d_products</code> e <code>marks3d_admins</code>, as permissões e o espaço de fotos. As tabelas do outro site são preservadas.</p><p><a class="button" href="https://supabase.com/dashboard/project/akvwvtcojbcfirdeqkvz/sql/new" target="_blank" rel="noopener noreferrer">Abrir Supabase</a> <button type="button" data-copy="installSQL">Copiar instalação</button></p><details><summary>Ver o código antes de copiar</summary><textarea id="installSQL" aria-label="SQL de instalação" readonly spellcheck="false">-- Mark’s 3D / instalação inicial, para executar UMA VEZ no SQL Editor do Supabase.
+-- Não altera tabelas do outro site. Qualquer colisão de nomes aborta a transação.
+-- Revise supabase/README.md antes de executar. Não cole senhas neste arquivo.
+begin;
+
+do $$
+begin
+  if to_regclass('public.marks3d_products') is not null
+     or to_regclass('public.marks3d_admins') is not null
+     or to_regprocedure('public.marks3d_is_admin()') is not null
+     or to_regprocedure('public.marks3d_valid_photos(jsonb)') is not null
+     or to_regprocedure('public.marks3d_touch_product()') is not null then
+    raise exception 'Já existe uma estrutura marks3d. Instalação cancelada sem substituir dados. Não execute novamente; revise a instalação existente.';
+  end if;
+end $$;
+
+create table public.marks3d_admins (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  created_at timestamptz not null default now()
+);
+alter table public.marks3d_admins enable row level security;
+revoke all on public.marks3d_admins from anon, authenticated;
+grant select on public.marks3d_admins to authenticated;
+create policy marks3d_admin_self on public.marks3d_admins for select to authenticated using (user_id = (select auth.uid()));
+
+create function public.marks3d_is_admin() returns boolean
+language sql stable security definer set search_path = '' as $$
+  select exists (select 1 from public.marks3d_admins where user_id = (select auth.uid()));
+$$;
+revoke all on function public.marks3d_is_admin() from public;
+grant execute on function public.marks3d_is_admin() to anon, authenticated;
+
+create function public.marks3d_valid_photos(value jsonb) returns boolean
+language plpgsql immutable set search_path = '' as $$
+declare photo jsonb;
+begin
+  if value is null or jsonb_typeof(value) &lt;&gt; 'array' then return false; end if;
+  if jsonb_array_length(value) &gt; 6 then return false; end if;
+  for photo in select jsonb_array_elements(value) loop
+    if jsonb_typeof(photo) &lt;&gt; 'object'
+       or not (photo ? 'path' and photo ? 'alt')
+       or jsonb_typeof(photo-&gt;'path') &lt;&gt; 'string'
+       or jsonb_typeof(photo-&gt;'alt') &lt;&gt; 'string'
+       or (photo-&gt;&gt;'path') !~ '^products/[0-9a-f-]{36}\.(jpg|png|webp)$'
+       or char_length(photo-&gt;&gt;'alt') &gt; 160 then return false; end if;
+  end loop;
+  return true;
+end $$;
+revoke all on function public.marks3d_valid_photos(jsonb) from public;
+grant execute on function public.marks3d_valid_photos(jsonb) to anon, authenticated;
+
+create table public.marks3d_products (
+  id bigint generated by default as identity (start with 1000) primary key check (id between 1 and 9007199254740991),
+  name text not null check (char_length(btrim(name)) between 1 and 120),
+  category text not null check (char_length(btrim(category)) between 1 and 80),
+  description text not null default '' check (char_length(description) &lt;= 2000),
+  price_cents integer not null check (price_cents between 0 and 100000000),
+  material text not null default '' check (char_length(material) &lt;= 120),
+  dimensions text not null default '' check (char_length(dimensions) &lt;= 160),
+  care text not null default '' check (char_length(care) &lt;= 800),
+  stock integer check (stock between 0 and 1000000),
+  grams numeric check (grams between 0 and 1000000),
+  hours numeric check (hours between 0 and 1000000),
+  art text not null default 'organizer' check (art in ('organizer','console','tool','antenna','medal','cap','bike','figure','cable')),
+  photos jsonb not null default '[]' check (public.marks3d_valid_photos(photos)),
+  published boolean not null default false,
+  featured_rank integer not null default 100 check (featured_rank between 0 and 1000000),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default clock_timestamp()
+);
+create index marks3d_products_public_order on public.marks3d_products (featured_rank, id) where published;
+create function public.marks3d_touch_product() returns trigger
+language plpgsql set search_path = '' as $$
+begin
+  new.updated_at := clock_timestamp();
+  return new;
+end $$;
+revoke all on function public.marks3d_touch_product() from public;
+create trigger marks3d_product_updated before update on public.marks3d_products for each row execute function public.marks3d_touch_product();
+
+alter table public.marks3d_products enable row level security;
+revoke all on public.marks3d_products from anon, authenticated;
+grant select on public.marks3d_products to anon, authenticated;
+grant insert (name, category, description, price_cents, material, dimensions, care, stock, grams, hours, art, photos, published, featured_rank)
+  on public.marks3d_products to authenticated;
+grant update (name, category, description, price_cents, material, dimensions, care, stock, grams, hours, art, photos, published, featured_rank)
+  on public.marks3d_products to authenticated;
+grant usage on sequence public.marks3d_products_id_seq to authenticated;
+-- O painel retira produtos da publicação, preservando o cadastro. Não recebe DELETE.
+create policy marks3d_catalog_read on public.marks3d_products for select to anon, authenticated using (published);
+create policy marks3d_admin_read on public.marks3d_products for select to authenticated using ((select public.marks3d_is_admin()));
+create policy marks3d_admin_insert on public.marks3d_products for insert to authenticated with check ((select public.marks3d_is_admin()));
+create policy marks3d_admin_update on public.marks3d_products for update to authenticated using ((select public.marks3d_is_admin())) with check ((select public.marks3d_is_admin()));
+
+-- Fotos de produtos são públicas, inclusive se o cadastro ainda for rascunho.
+-- Uma colisão de bucket também cancela a transação inteira.
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values ('marks3d-products', 'marks3d-products', true, 5242880, array['image/jpeg','image/png','image/webp']);
+
+create policy marks3d_photo_read on storage.objects for select to authenticated
+  using (bucket_id = 'marks3d-products' and (select public.marks3d_is_admin()));
+create policy marks3d_photo_insert on storage.objects for insert to authenticated
+  with check (bucket_id = 'marks3d-products' and (select public.marks3d_is_admin()) and name ~ '^products/[0-9a-f-]{36}\.(jpg|png|webp)$');
+
+-- Políticas restritivas protegem ESTE bucket mesmo se o projeto já tiver uma
+-- política permissiva de escrita para o outro site. Fora dele, retornam true.
+create policy marks3d_bucket_insert_guard on storage.objects as restrictive for insert to anon, authenticated
+  with check (bucket_id is distinct from 'marks3d-products' or ((select public.marks3d_is_admin()) and name ~ '^products/[0-9a-f-]{36}\.(jpg|png|webp)$'));
+create policy marks3d_bucket_update_guard on storage.objects as restrictive for update to anon, authenticated
+  using (bucket_id is distinct from 'marks3d-products') with check (bucket_id is distinct from 'marks3d-products');
+create policy marks3d_bucket_delete_guard on storage.objects as restrictive for delete to anon, authenticated
+  using (bucket_id is distinct from 'marks3d-products');
+-- Fotos são imutáveis; cada envio usa um nome único. A limpeza de fotos sem uso
+-- é feita pelo responsável no dashboard, após conferir as referências.
+
+commit;
+</textarea></details><p class="status" id="installStatus" role="status"></p><small>Se aparecer “Já existe uma estrutura marks3d” ou um aviso de que o bucket já existe, pare e revise a instalação existente. Não apague tabelas para tentar de novo.</small></section>
+<section><h2>2. Manter os produtos da loja</h2><p>Abra uma nova consulta no SQL Editor, copie o catálogo inicial e execute. São os dez produtos e preços da loja aprovada. Produtos com os mesmos IDs não são sobrescritos.</p><button type="button" data-copy="seedSQL">Copiar catálogo inicial</button><details><summary>Ver o catálogo antes de copiar</summary><textarea id="seedSQL" aria-label="SQL do catálogo inicial" readonly spellcheck="false">-- Gerado a partir de catalog.js. Não sobrescreve produtos já existentes.
+-- Executar após 01-install.sql. Preserva IDs e preços da loja aprovada.
+begin;
+insert into public.marks3d_products (id,name,category,description,price_cents,material,dimensions,care,stock,grams,hours,art,photos,published,featured_rank) values
+(1,'Suporte de parede para PS4 Slim + 2 controles','Setup gamer','Suporte de parede para organizar um PS4 Slim e dois controles. Confirme o modelo do console, as medidas e a forma de fixação antes de encomendar.',3760,'PLA / PETG','','Limpe com pano macio e evite calor excessivo. Consulte a adequação do material ao uso pretendido; resistência e acabamento dependem da peça e da aplicação.',null,90,4.2,'console','[]'::jsonb,true,0),
+(2,'Gabarito afiador de brocas para esmerilhadeira','Ferramenta','Gabarito para auxiliar no posicionamento de brocas durante a afiação. A compatibilidade com sua ferramenta e as condições de uso precisam ser avaliadas antes da produção.',3007,'PETG recomendado após testes','','Limpe com pano macio e evite calor excessivo. Consulte a adequação do material ao uso pretendido; resistência e acabamento dependem da peça e da aplicação.',null,55,2.5,'tool','[]'::jsonb,true,1),
+(3,'Suporte ajustável para antena Starlink Mini','Suporte técnico','Suporte ajustável para antena Starlink Mini. Consulte compatibilidade, fixação e adequação do material ao local de instalação.',10350,'PETG; validar uso externo','','Limpe com pano macio e evite calor excessivo. Consulte a adequação do material ao uso pretendido; resistência e acabamento dependem da peça e da aplicação.',null,180,8,'antenna','[]'::jsonb,true,2),
+(4,'Porta-medalhas personalizado para 32 medalhas','Personalizado','Porta-medalhas com proposta de acomodar até 32 medalhas e possibilidade de personalização. Confirme o espaço necessário e a distribuição das medalhas.',3890,'PLA','','Limpe com pano macio e evite calor excessivo. Consulte a adequação do material ao uso pretendido; resistência e acabamento dependem da peça e da aplicação.',null,100,4.5,'medal','[]'::jsonb,true,3),
+(5,'Porta-medalhas universal com nome','Personalizado','Porta-medalhas com nome personalizado. Envie o nome desejado e consulte as opções de tamanho e acabamento.',3590,'PLA','','Limpe com pano macio e evite calor excessivo. Consulte a adequação do material ao uso pretendido; resistência e acabamento dependem da peça e da aplicação.',null,95,4.2,'medal','[]'::jsonb,true,4),
+(6,'Organizador de pincéis de maquiagem','Organização','Organizador para guardar pincéis de maquiagem. Consulte as medidas dos compartimentos para conferir a compatibilidade com seus pincéis.',2307,'PLA','','Limpe com pano macio e evite calor excessivo. Consulte a adequação do material ao uso pretendido; resistência e acabamento dependem da peça e da aplicação.',null,65,3,'organizer','[]'::jsonb,true,5),
+(7,'Suporte organizador para bonés','Organização','Suporte para organizar bonés. Confirme a quantidade de peças, as medidas e o método de instalação com a loja.',1283,'PLA','','Limpe com pano macio e evite calor excessivo. Consulte a adequação do material ao uso pretendido; resistência e acabamento dependem da peça e da aplicação.',null,25,1.3,'cap','[]'::jsonb,true,6),
+(8,'Suporte discreto para rastreador de bicicleta','Segurança','Suporte discreto para acomodar um rastreador na bicicleta. Informe o modelo do rastreador e as medidas do ponto de fixação para avaliar a compatibilidade.',2270,'PETG para exposição externa','','Limpe com pano macio e evite calor excessivo. Consulte a adequação do material ao uso pretendido; resistência e acabamento dependem da peça e da aplicação.',null,20,1,'bike','[]'::jsonb,true,7),
+(9,'Boneco articulado tipo Dummy','Brinquedo','Boneco articulado tipo Dummy produzido em impressão 3D. Consulte tamanho, montagem e indicação de uso. A peça pode conter partes pequenas.',1799,'PLA','','Limpe com pano macio e evite calor excessivo. Consulte a adequação do material ao uso pretendido; resistência e acabamento dependem da peça e da aplicação.',null,45,2.2,'figure','[]'::jsonb,true,8),
+(10,'Kit organizador de cabos e fios','Organização','Kit para organizar cabos e fios. Consulte a composição do kit e os diâmetros compatíveis antes de encomendar.',1599,'PLA','','Limpe com pano macio e evite calor excessivo. Consulte a adequação do material ao uso pretendido; resistência e acabamento dependem da peça e da aplicação.',null,22,1.1,'cable','[]'::jsonb,true,9)
+on conflict (id) do nothing;
+commit;
+</textarea></details><p class="status" id="seedStatus" role="status"></p></section>
+<section><h2>3. Cadastrar o acesso por nome e senha</h2><p>O login do painel é por <strong>nome de usuário e senha</strong>. Ter o projeto Supabase pronto não cadastra automaticamente esse acesso. Você não precisa fornecer um e-mail pessoal.</p><label for="provisionUsername">Nome de usuário do painel<input id="provisionUsername" value="RAFAEL" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="32"></label><p>O serviço de autenticação usa uma identificação interna, gerada a partir do nome. Ela não recebe mensagens e não aparece na tela de login da loja.</p><label for="authIdentity">Identificação interna para cadastrar no Supabase<input id="authIdentity" readonly></label><button id="copyIdentity" type="button">Copiar identificação interna</button><ol><li>Abra <strong>Authentication → Users → Add user → Create new user</strong> no Supabase.</li><li>No campo <strong>Email</strong> dessa tela de configuração, cole a identificação interna acima. Defina a senha diretamente no campo <strong>Password</strong> e deixe <strong>Auto Confirm User</strong> ativado. Clique em <strong>Create user</strong>.</li><li>Se essa identificação já existir, confira o cadastro existente. Não exclua nem altere o usuário do outro site.</li><li>Copie a autorização pelo botão abaixo e execute em uma nova consulta no <strong>SQL Editor</strong>. Ela libera somente o usuário correspondente a esse nome.</li></ol><p><a class="button" href="https://supabase.com/dashboard/project/akvwvtcojbcfirdeqkvz/auth/users" target="_blank" rel="noopener noreferrer">Abrir usuários do Supabase</a></p><button id="authorizeCopy" type="button">Copiar autorização do usuário</button><p class="status" id="authorizeStatus" role="status"></p><p>Depois, entre no painel com <strong>RAFAEL</strong> (ou o nome que você definiu acima) e a senha cadastrada. Não copie a identificação interna no campo de login: ali entra apenas o nome.</p><details><summary>Ver a autorização antes de copiar</summary><textarea id="authorizeSQL" aria-label="SQL de autorização do usuário" readonly spellcheck="false"></textarea></details></section>
+<section><h2>4. Conferir o painel</h2><p>Entre no painel, confira os produtos e teste o cadastro de uma peça não publicada. O conteúdo administrativo aparece somente após autenticar um usuário autorizado.</p><p>Para preservar a loja durante a instalação, o catálogo conectado ainda está desativado. Depois de validar o acesso, a loja pode ser ativada com o catálogo do Supabase. A orientação técnica está no guia <code>supabase/README.md</code>.</p></section><footer>Nenhuma senha ou chave secreta está nesta página. A instalação só acontece quando você executa as instruções no Supabase.</footer></main>
+<script>window.MARKS3D_ADMIN_AUTH_SQL = "-- Execute após criar a identidade interna do usuário em Authentication → Users.\n-- Para RAFAEL, a identidade é rafael@admin.marks3d.invalid (Auto Confirm ligado).\n-- A senha é definida nessa tela do Supabase; nunca entra neste SQL ou no HTML.\n-- Esta consulta só autoriza o usuário existente; não cria conta nem muda senha.\ndo $$\ndeclare admin_username text := 'rafael';\ndeclare admin_id uuid;\nbegin\n  if admin_username !~ '^[a-z0-9][a-z0-9._-]{2,31}$' then\n    raise exception 'Nome de usuário inválido.';\n  end if;\n  select id into admin_id from auth.users\n    where lower(email) = admin_username || '@admin.marks3d.invalid';\n  if admin_id is null then\n    raise exception 'O acesso de % ainda não foi cadastrado. Crie a identidade interna em Authentication → Users antes de autorizar.', admin_username;\n  end if;\n  insert into public.marks3d_admins(user_id) values (admin_id) on conflict (user_id) do nothing;\nend $$;\n";
+(()=>{function s(e){let a=String(e??"").trim().toLowerCase();if(!/^[a-z0-9][a-z0-9._-]{2,31}$/.test(a))throw new Error("Use um nome de usu\xE1rio de 3 a 32 caracteres, com letras sem acento, n\xFAmeros, ponto, tra\xE7o ou sublinhado.");return{username:a,email:`${a}@admin.marks3d.invalid`}}var t=e=>document.getElementById(e);async function i(e,a){let n=t(e);try{await navigator.clipboard.writeText(n.value),t(a).textContent=e==="authIdentity"?"Identifica\xE7\xE3o copiada. Cole no campo Email de Create new user no Supabase. No painel da loja, voc\xEA entrar\xE1 apenas pelo nome.":"Copiado. Cole em uma nova consulta no SQL Editor do Supabase e confira antes de executar."}catch{let r=n.closest("details");r&&(r.open=!0),n.focus(),n.select(),t(a).textContent="O navegador n\xE3o permitiu copiar automaticamente. O texto est\xE1 selecionado: use Copiar ou Ctrl+C."}}function o(){try{let e=s(t("provisionUsername").value);return t("authIdentity").value=e.email,t("authorizeSQL").value=window.MARKS3D_ADMIN_AUTH_SQL.replace("admin_username text := 'rafael'",`admin_username text := '${e.username}'`),t("authorizeStatus").textContent="",!0}catch(e){return t("authIdentity").value="",t("authorizeSQL").value="",t("authorizeStatus").textContent=e.message,!1}}document.querySelectorAll("[data-copy]").forEach(e=>e.addEventListener("click",()=>i(e.dataset.copy,e.dataset.copy==="installSQL"?"installStatus":"seedStatus")));t("provisionUsername").addEventListener("input",o);t("copyIdentity").addEventListener("click",()=>{o()&&i("authIdentity","authorizeStatus")});t("authorizeCopy").addEventListener("click",()=>{o()&&i("authorizeSQL","authorizeStatus")});o();})();
+</script></body></html>
